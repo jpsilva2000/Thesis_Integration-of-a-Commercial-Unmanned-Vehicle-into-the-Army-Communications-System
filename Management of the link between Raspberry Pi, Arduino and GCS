@@ -1,0 +1,171 @@
+
+# MAVProxy command: mavproxy.py --master=udpout:{IP_Wifi_RPI}:14550 --master=udpout:{IP_eth0_RPI}:14550 --out=udp:127.0.0.1:14551 --out=udp:127.0.0.1:14552
+
+import time
+import gps
+from pymavlink import mavutil
+from arduino_controller import ArduinoController
+
+# Define Arduino ports and network connections
+arduino_port = "/dev/ttyACM0"  # Adjust as needed
+ETHERNET_IP = '192.168.1.100'  # Replace with your Ethernet Raspi IP
+WIFI_IP = '172.18.66.172'      # Replace with your Wi-Fi Raspi IP
+UDP_PORT = 14550               # Common UDP port for MAVLink
+
+# Create MAVLink connections for Ethernet and Wi-Fi
+ethernet_master = mavutil.mavlink_connection('udpin:{}:{}'.format(ETHERNET_IP, UDP_PORT), source_system=255, source_component=158)
+wifi_master = mavutil.mavlink_connection('udpin:{}:{}'.format(WIFI_IP, UDP_PORT), source_system=255, source_component=158)
+
+wifi_master.wait_heartbeat()
+ethernet_master.wait_heartbeat()
+
+print("Heartbeat received from both Ethernet and Wi-Fi channels")
+
+# Instantiate the Arduino controller
+arduino_controller = ArduinoController(port=arduino_port)
+arduino_controller.connect()
+print("Connection to Arduino established")
+
+# Function to send heartbeat via Ethernet
+def send_heartbeat():
+    """Sends a heartbeat message with predefined parameters over Ethernet."""
+    try:
+        # Create a MAVLink heartbeat message
+        msg = ethernet_master.mav.heartbeat_encode(
+            mavutil.mavlink.MAV_TYPE_GENERIC,  # Type of MAV (Ground Control Station)
+            mavutil.mavlink.MAV_AUTOPILOT_GENERIC,
+            0,
+            0,
+            mavutil.mavlink.MAV_STATE_STANDBY
+        )
+        # Send the heartbeat message via Ethernet
+        wifi_master.mav.send(msg)
+        ethernet_master.mav.send(msg)
+        print("Heartbeat sent via Ethernet and WiFi")
+    except Exception as e:
+        print(f"Error sending heartbeat: {e}")
+
+# Function to send control commands to Arduino via Wi-Fi
+def send_command_to_arduino(command):
+    try:
+        arduino_controller.send_command(command)
+        print(f"Command sent to Arduino: {command}")
+    except Exception as e:
+        print(f"Error sending command to Arduino: {e}")
+    time.sleep(0.1)  # Wait a bit for Arduino to process the command
+
+# Function to send position via Ethernet
+def send_position(latitude, longitude, altitude):
+    """Sends a position message with given parameters over Ethernet."""
+    try:
+        # Ensure latitude, longitude, and altitude are numbers
+        latitude = float(latitude)
+        longitude = float(longitude)
+        altitude = float(altitude) if altitude is not None else 0.0  # Use 0.0 as default if altitude is None
+
+        # Create a MAVLink message for position
+        msg = ethernet_master.mav.gps_raw_int_encode(
+            0,
+            mavutil.mavlink.GPS_FIX_TYPE_3D_FIX,
+            int(latitude * 1e7),  # Latitude in degrees * 1e7
+            int(longitude * 1e7),  # Longitude in degrees * 1e7
+            int(altitude * 1e3),  # Altitude in meters * 1000
+            0,  
+            0,  
+            0,  
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,  
+            1,   # Vehicle heading
+            0
+        )
+        # Send the position message via Ethernet
+        ethernet_master.mav.send(msg)
+        print(f"Position sent via Ethernet: Lat={latitude}, Lon={longitude}, Alt={altitude}")
+    except ValueError:
+        print(f"Invalid values for latitude ({latitude}), longitude ({longitude}), or altitude ({altitude}).")
+    except Exception as e:
+        print(f"Error sending position: {e}")
+
+# Function to get GPS data
+def get_gps_data():
+    """Retrieves GPS data."""
+    # Initialize the GPS session
+    session = gps.gps(mode=gps.WATCH_ENABLE)
+    try:
+        while True:
+            # Receive the next packet
+            report = session.next()
+            # Check if the packet contains position data
+            if report['class'] == 'TPV':
+                latitude = getattr(report, 'lat', None)
+                longitude = getattr(report, 'lon', None)
+                altitude = getattr(report, 'alt', None)
+                if latitude is not None and longitude is not None:
+                    print(f"GPS Data: Latitude={latitude}, Longitude={longitude}, Altitude={altitude}")
+                    return latitude, longitude, altitude
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("GPS data retrieval stopped.")
+    except Exception as e:
+        print(f"Error retrieving GPS data: {e}")
+    return None, None, None
+
+def handle_manual_control(msg):
+    """Handles MANUAL_CONTROL messages received via Wi-Fi."""
+    x = msg.x
+    y = msg.y
+    z = msg.z
+    r = msg.r
+
+    print(f"Received MANUAL_CONTROL: x={x}, y={y}, z={z}, r={r}")
+
+    if x > 500:
+        send_command_to_arduino('%F#')  # Move forward
+    elif x < -500:
+        send_command_to_arduino('%B#')  # Move backward
+
+    if z > 500:
+        send_command_to_arduino('%R#')  # Move right
+    elif z < -500:
+        send_command_to_arduino('%L#')  # Move left
+
+# Main function to execute both tasks in parallel
+def main():
+    position_interval = 10  # 10-second interval for sending position (adjust as needed)
+    last_position_time = time.time()
+
+    try:
+        while True:
+            # Send heartbeat via Ethernet every second
+            send_heartbeat()
+
+            # Check if it's time to send position data
+            current_time = time.time()
+            if current_time - last_position_time >= position_interval:
+                # Get GPS data
+                latitude, longitude, altitude = get_gps_data()
+                if latitude is not None and longitude is not None:
+                    # Send position via Ethernet
+                    send_position(latitude, longitude, altitude)
+                last_position_time = current_time  # Update the last sent position time
+
+            # Listen for messages received via Wi-Fi
+            msg = wifi_master.recv_match(blocking=False)
+            while msg:
+                if msg.get_type() == 'MANUAL_CONTROL':
+                    handle_manual_control(msg)
+                msg = wifi_master.recv_match(blocking=False)
+               
+            time.sleep(1)  # Small pause to avoid overloading the CPU
+
+    except KeyboardInterrupt:
+        print("Program terminated by user")
+        arduino_controller.disconnect()
+
+if __name__ == "__main__":
+    main()
+
