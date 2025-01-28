@@ -17,3 +17,8 @@ The solution developed was implemented using LAFVIN UGV and the tests were carri
 support of the SIC-T project team. After obtaining the results, it was possible to draw important values
 and conclusions regarding using military radios — P/PRC-525 and TR5000H — for integrating a UGV
 into the BMS.
+
+
+-» The script Management of the link between Raspberry Pi, Arduino and GCS is executed in the UGV/UAV, in this case, Raspberry Pi
+
+-» The script Management of the link between GCS and BMS is executed in the GCS
