@@ -1,0 +1,143 @@
+import time
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from pymavlink import mavutil
+import socket
+import xml.dom.minidom
+import os
+
+# Server address configuration
+SERVER_IP = '192.168.211.42'  # Local server IP address
+SERVER_PORT = 48882           # Server port
+
+# Create connection with MAVProxy
+master = mavutil.mavlink_connection('udpin:0.0.0.0:14552', source_system=255, source_component=158)
+master.wait_heartbeat()
+print("Heartbeat received from MAVProxy")
+
+# Function to create XML report
+def create_bms_xml(latitude, longitude):
+    current_time = datetime.utcnow()
+    
+    xml_data = f'''<?xml version="1.0" encoding="utf-8"?>
+<mtf:FriendlyForceInformation xmlns:mtf="urn:nato:mtf:app-11(d):1:ffi" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <OperationCodeword>
+        <OperationCodeword>TEST</OperationCodeword>
+    </OperationCodeword>
+    <MessageIdentifier>
+        <MessageTextFormatIdentifier>FFI</MessageTextFormatIdentifier>
+        <Standard>APP-11(D)</Standard>
+        <Version>1</Version>
+        <Originator>PRT</Originator>
+        <ReferenceTimeOfPublication>
+            <DateTimeIso>
+                <Year4Digit>{current_time.strftime("%Y")}</Year4Digit>
+                <MonthNumeric>{current_time.strftime("%m")}</MonthNumeric>
+                <Day>{current_time.strftime("%d")}</Day>
+                <TimeDelimiter>T</TimeDelimiter>
+                <HourTime>{current_time.strftime("%H")}</HourTime>
+                <MinuteTime>{current_time.strftime("%M")}</MinuteTime>
+                <SecondTime>{current_time.strftime("%S")}</SecondTime>
+                <TimeZoneZulu>Z</TimeZoneZulu>
+            </DateTimeIso>
+        </ReferenceTimeOfPublication>
+        <MessageSecurityPolicy>NATO</MessageSecurityPolicy>
+        <MessageClassification>
+            <SecurityClassificationExtended>UNCLASSIFIED</SecurityClassificationExtended>
+        </MessageClassification>
+    </MessageIdentifier>
+    <GeodeticDatum>
+        <GeodeticDatum>WGE</GeodeticDatum>
+    </GeodeticDatum>
+    <TrackInformation>
+        <TrackSource>
+            <TransponderId>PRTUGVLAVIN01</TransponderId>
+            <System>UGV</System>
+            <Subsystem>LAFVIN</Subsystem>
+            <Nationality>
+                <GeographicalEntity>PRT</GeographicalEntity>
+            </Nationality>
+        </TrackSource>
+        <TrackSecurityLabel>
+            <TrackSecurityPolicy>NATO</TrackSecurityPolicy>
+            <TrackSecurityClassification>
+                <SecurityClassificationExtended>UNCLASSIFIED</SecurityClassificationExtended>
+            </TrackSecurityClassification>
+            <TrackSecurityCategory>RELEASABLE TO PRT ARMY</TrackSecurityCategory>
+        </TrackSecurityLabel>
+        <TrackPositionalData>
+            <Time>
+                <Year4Digit>{current_time.strftime("%Y")}</Year4Digit>
+                <MonthNumeric>{current_time.strftime("%m")}</MonthNumeric>
+                <Day>{current_time.strftime("%d")}</Day>
+                <TimeDelimiter>T</TimeDelimiter>
+                <HourTime>{current_time.strftime("%H")}</HourTime>
+                <MinuteTime>{current_time.strftime("%M")}</MinuteTime>
+                <SecondTime>{current_time.strftime("%S")}</SecondTime>
+                <TimeZoneZulu>Z</TimeZoneZulu>
+            </Time>
+            <Location>
+                <LatitudeDegrees>{str(int(latitude / 1e7))}</LatitudeDegrees>
+                <LatitudeMinutes04DecimalPlaces>{"{:.4f}".format(abs((latitude / 1e7 - int(latitude / 1e7)) * 60))}</LatitudeMinutes04DecimalPlaces>
+                <LatitudinalHemisphere>{"N" if latitude >= 0 else "S"}</LatitudinalHemisphere>
+                <Hyphen>-</Hyphen>
+                <LongitudeDegrees>{str(abs(int(longitude / 1e7)))}</LongitudeDegrees>
+                <LongitudeMinutes04DecimalPlaces>{"{:.4f}".format(abs((longitude / 1e7 - int(longitude / 1e7)) * 60))}</LongitudeMinutes04DecimalPlaces>
+                <LongitudinalHemisphere>{"E" if longitude >= 0 else "W"}</LongitudinalHemisphere>
+            </Location>
+        </TrackPositionalData>
+        <TrackIdentificationData>
+            <UnitSymbol>SFGPEV---------</UnitSymbol>
+            <SymbolStandard>APP-6(B)</SymbolStandard>
+            <UnitShortName>UGV-LAFVIN02</UnitShortName>
+        </TrackIdentificationData>
+    </TrackInformation>
+</mtf:FriendlyForceInformation>'''
+
+    filename = "bms_report.xml"
+    with open(filename, 'w') as f:
+        f.write(xml_data)
+    
+    return filename
+
+# Function to send XML file to the server
+def send_xml_file(filename, server_ip, server_port):
+    with open(filename, 'rb') as f:
+        data = f.read()
+    
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((server_ip, server_port))
+            s.sendall(data)
+            print(f"File {filename} sent to {server_ip}:{server_port}")
+    except Exception as e:
+        print(f"Error sending file: {e}")
+
+# Function to get GPS_RAW_INT message data
+def get_position_data(msg):
+    latitude = msg.lat
+    longitude = msg.lon
+    altitude = msg.alt
+    return latitude, longitude, altitude
+
+def main():
+    try:
+        while True:
+            # Receive MAVLink messages
+            msg = master.recv_match(type='GPS_RAW_INT', blocking=True)
+            if msg:
+                latitude, longitude, altitude = get_position_data(msg)
+                print(f"Latitude: {latitude / 1e7}, Longitude: {longitude / 1e7}, Altitude: {altitude / 1e3}")
+                
+                # Create XML report with received data
+                filename = create_bms_xml(latitude, longitude)
+                
+                # Send XML report to the server
+                send_xml_file(filename, SERVER_IP, SERVER_PORT)
+            
+            time.sleep(15)
+    except KeyboardInterrupt:
+        print("Program terminated by user")
+
+if __name__ == "__main__":
+    main()
